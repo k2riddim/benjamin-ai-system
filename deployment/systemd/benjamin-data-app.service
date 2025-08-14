@@ -1,0 +1,26 @@
+[Unit]
+Description=Benjamin AI Data App - Data Collection Service
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=chorizo
+Group=chorizo
+WorkingDirectory=/home/chorizo/projects/benjamin_ai_system
+Environment=PYTHONPATH=/home/chorizo/projects/benjamin_ai_system
+Environment=GARTH_HOME=/home/chorizo/.garmin_tokens
+EnvironmentFile=-/home/chorizo/projects/benjamin_ai_system/data_app/config/.env
+ExecStart=/home/chorizo/bbox_env/bin/python -m data_app.src.main daemon
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/chorizo/projects/benjamin_ai_system/data_app/logs
+
+[Install]
+WantedBy=multi-user.target

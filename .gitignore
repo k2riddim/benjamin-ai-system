@@ -1,0 +1,39 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Env files (secrets)
+.env
+**/.env
+**/config/.env
+
+# Logs and runtime outputs
+logs/
+**/logs/
+*.log
+**/*.log
+status/reports/
+
+# Token directories
+.garmin_tokens/
+
+# IDE/OS
+.vscode/
+.idea/
+.DS_Store
+
+# Compiled
+*.so
+
+# Cache
+.cache/
+**/.mypy_cache/
+**/.pytest_cache/
+**/.ruff_cache/
+
+# Node
+node_modules/
+
+

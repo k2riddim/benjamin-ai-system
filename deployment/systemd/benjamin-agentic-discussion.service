@@ -1,0 +1,31 @@
+[Unit]
+Description=Benjamin AI - Daily Agent Discussion Service
+Documentation=https://github.com/benjamin/ai-system
+After=network.target benjamin-data-api.service benjamin-agentic-api.service
+Wants=network.target
+Requires=benjamin-data-api.service
+
+[Service]
+Type=oneshot
+User=chorizo
+Group=chorizo
+WorkingDirectory=/home/chorizo/projects/benjamin_ai_system
+Environment=PYTHONPATH=/home/chorizo/projects/benjamin_ai_system
+EnvironmentFile=-/home/chorizo/projects/benjamin_ai_system/telegram_app/config/.env
+ExecStart=/home/chorizo/bbox_env/bin/python -m telegram_app.src.main daily_message
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/chorizo/projects/benjamin_ai_system/telegram_app/logs
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=benjamin-agentic-discussion
+
+[Install]
+WantedBy=multi-user.target
+
+

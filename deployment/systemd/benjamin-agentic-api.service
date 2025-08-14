@@ -1,0 +1,35 @@
+[Unit]
+Description=Benjamin AI - Agentic App API Server
+Documentation=https://github.com/benjamin/ai-system
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=chorizo
+Group=chorizo
+WorkingDirectory=/home/chorizo/projects/benjamin_ai_system
+Environment=PYTHONPATH=/home/chorizo/projects/benjamin_ai_system
+Environment=LANGSMITH_TRACING_V2=true
+Environment=LANGCHAIN_PROJECT=benjamin-ai-system
+EnvironmentFile=-/home/chorizo/projects/benjamin_ai_system/agentic_app/config/.env
+ExecStart=/home/chorizo/bbox_env/bin/uvicorn agentic_app.src.main:app --host 0.0.0.0 --port 8012 --log-level info
+Restart=always
+RestartSec=5
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/chorizo/projects/benjamin_ai_system/agentic_app/logs
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=benjamin-agentic-api
+
+[Install]
+WantedBy=multi-user.target
+
+
+

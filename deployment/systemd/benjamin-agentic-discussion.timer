@@ -1,0 +1,14 @@
+[Unit]
+Description=Benjamin AI - Daily Agent Discussion Timer
+
+[Timer]
+# Fire every day at 07:00 local time
+OnCalendar=*-*-* 07:00:00
+Persistent=true
+Unit=benjamin-agentic-discussion.service
+
+[Install]
+WantedBy=timers.target
+
+
+

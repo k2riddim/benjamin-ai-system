@@ -1,0 +1,25 @@
+[Unit]
+Description=Benjamin AI Data API Server
+After=network.target postgresql.service benjamin-data-app.service
+
+[Service]
+Type=simple
+User=chorizo
+Group=chorizo
+WorkingDirectory=/home/chorizo/projects/benjamin_ai_system
+Environment=PYTHONPATH=/home/chorizo/projects/benjamin_ai_system
+EnvironmentFile=-/home/chorizo/projects/benjamin_ai_system/data_app/config/.env
+ExecStart=/home/chorizo/bbox_env/bin/uvicorn data_app.src.api_server:app --host 127.0.0.1 --port 8010 --workers 1
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/chorizo/projects/benjamin_ai_system/data_app/logs
+
+[Install]
+WantedBy=multi-user.target
