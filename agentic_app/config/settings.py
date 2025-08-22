@@ -21,7 +21,13 @@ class AgenticSettings(BaseModel):
 
     # OpenAI / LangChain
     openai_api_key: str | None = os.environ.get("AGENTIC_APP_OPENAI_API_KEY")
-    openai_model: str = os.environ.get("AGENTIC_APP_OPENAI_MODEL", "gpt-4o-mini")
+    openai_model: str = os.environ.get("AGENTIC_APP_OPENAI_MODEL", "gpt-5")
+    # Optional lighter model for inexpensive/context-only tasks (e.g., contextualizer)
+    # Defaults to primary model if not provided
+    openai_context_model: str = os.environ.get(
+        "AGENTIC_APP_OPENAI_CONTEXT_MODEL",
+        os.environ.get("AGENTIC_APP_OPENAI_MODEL", "gpt-4.1-nano"),
+    )
     embedding_model: str = os.environ.get("AGENTIC_APP_EMBEDDING_MODEL", "text-embedding-3-small")
     langsmith_project: str | None = os.environ.get("LANGCHAIN_PROJECT")
     qdrant_url: str | None = os.environ.get("AGENTIC_APP_QDRANT_URL")

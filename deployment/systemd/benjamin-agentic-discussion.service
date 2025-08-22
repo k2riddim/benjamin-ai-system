@@ -12,7 +12,7 @@ Group=chorizo
 WorkingDirectory=/home/chorizo/projects/benjamin_ai_system
 Environment=PYTHONPATH=/home/chorizo/projects/benjamin_ai_system
 EnvironmentFile=-/home/chorizo/projects/benjamin_ai_system/telegram_app/config/.env
-ExecStart=/home/chorizo/bbox_env/bin/python -m telegram_app.src.main daily_message
+ExecStart=/home/chorizo/bbox_env/bin/python -m telegram_app.src.main daily-message
 
 # Security settings
 NoNewPrivileges=true

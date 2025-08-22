@@ -449,6 +449,7 @@ class DataSynchronizer:
                     row.kilojoules = act.kilojoules
                     row.calories = act.calories
                     row.suffer_score = act.suffer_score
+                    row.training_load = act.suffer_score  # Map suffer_score to training_load
                     row.source = "strava"
                     row.device_name = act.device_name
                     row.trainer = act.trainer
@@ -463,6 +464,20 @@ class DataSynchronizer:
                         db.commit()
 
                 db.commit()
+                
+                # Update training load daily aggregations for affected dates
+                if result.records > 0:
+                    unique_dates = set()
+                    for act in activities:
+                        if act and act.start_date:
+                            unique_dates.add(act.start_date.date())
+                    
+                    for activity_date in unique_dates:
+                        try:
+                            self.update_training_load_daily(activity_date)
+                        except Exception as e:
+                            self.logger.warning(f"Failed to update training load for {activity_date}: {e}")
+                
                 self._log_sync(db, sync_type="strava_activities", start=sync_started, status="success",
                                processed=result.records, updated=result.updated, created=result.created, data_range=data_range)
                 db.commit()
@@ -702,5 +717,85 @@ class DataSynchronizer:
             version=settings.version,
         )
         db.add(log)
+
+    def update_training_load_daily(self, target_date: date) -> None:
+        """Update TrainingLoadDaily record for a specific date"""
+        from datetime import datetime
+        
+        with get_db_session() as db:
+            # Calculate daily load for target date
+            daily_load = (
+                db.query(Activities.training_load)
+                .filter(Activities.start_date >= datetime.combine(target_date, datetime.min.time()))
+                .filter(Activities.start_date <= datetime.combine(target_date, datetime.max.time()))
+                .filter(Activities.training_load.isnot(None))
+            )
+            daily_total = sum(float(load[0]) for load in daily_load if load[0] is not None)
+            
+            # Get historical data for rolling averages (last 28 days)
+            start_calc = target_date - timedelta(days=27)
+            historical_activities = (
+                db.query(Activities)
+                .filter(Activities.start_date >= datetime.combine(start_calc, datetime.min.time()))
+                .filter(Activities.start_date <= datetime.combine(target_date, datetime.max.time()))
+                .filter(Activities.training_load.isnot(None))
+                .all()
+            )
+            
+            # Group by date
+            daily_loads = {}
+            for activity in historical_activities:
+                activity_date = activity.start_date.date()
+                if activity_date not in daily_loads:
+                    daily_loads[activity_date] = 0.0
+                daily_loads[activity_date] += float(activity.training_load or 0)
+            
+            # Calculate rolling averages
+            all_dates = sorted([d for d in daily_loads.keys() if d <= target_date])
+            
+            if len(all_dates) >= 7:
+                # 7-day acute load
+                acute_dates = [d for d in all_dates if (target_date - d).days < 7]
+                acute_load = sum(daily_loads.get(d, 0) for d in acute_dates) / len(acute_dates)
+                
+                # 28-day chronic load
+                chronic_dates = [d for d in all_dates if (target_date - d).days < 28]
+                chronic_load = sum(daily_loads.get(d, 0) for d in chronic_dates) / len(chronic_dates)
+                
+                # Determine training status
+                if chronic_load > 0:
+                    ratio = acute_load / chronic_load
+                    if ratio > 1.5:
+                        training_status = "Overreaching"
+                    elif ratio > 1.3:
+                        training_status = "Functional Overreaching"
+                    elif ratio > 0.8:
+                        training_status = "Maintaining"
+                    else:
+                        training_status = "Detraining"
+                else:
+                    training_status = "Insufficient Data"
+                
+                # Update or create record
+                existing = db.query(TrainingLoadDaily).filter(TrainingLoadDaily.date == target_date).first()
+                
+                if existing:
+                    existing.daily_load = daily_total
+                    existing.acute_load_7d = acute_load
+                    existing.chronic_load_28d = chronic_load
+                    existing.training_status = training_status
+                    existing.updated_at = datetime.utcnow()
+                else:
+                    new_record = TrainingLoadDaily(
+                        date=target_date,
+                        daily_load=daily_total,
+                        acute_load_7d=acute_load,
+                        chronic_load_28d=chronic_load,
+                        training_status=training_status
+                    )
+                    db.add(new_record)
+                
+                db.commit()
+                self.logger.info(f"Updated training load for {target_date}: daily={daily_total:.1f}, acute={acute_load:.1f}, chronic={chronic_load:.1f}, status={training_status}")
 
 

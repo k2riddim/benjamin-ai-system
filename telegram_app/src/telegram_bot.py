@@ -31,18 +31,18 @@ class BenjaminTelegramBot:
         self.data_api_url = settings.data_api_base_url
         # Track last message timestamps per chat for session end
         self._last_msg_ts: Dict[str, float] = {}
-        # Event/goal flows removed
-        # Coach intents: request different workout flow
-        self._awaiting_workout_change: Dict[str, bool] = {}
         # Ephemeral session ids per chat to group short-term conversation turns
         self._session_ids: Dict[str, str] = {}
         # Per-chat debug toggle to include context_debug information from Agentic API
         self._debug_mode: Dict[str, bool] = {}
+        # Track workout change request state per chat
+        self._awaiting_workout_change: Dict[str, bool] = {}
         
         # Main menu keyboard (streamlined)
         self.main_menu_keyboard = ReplyKeyboardMarkup([
             [KeyboardButton("📊 Today's Data"), KeyboardButton("🏃 Recent Activities")],
-            [KeyboardButton("🤖 Discussion")],
+            [KeyboardButton("🤖 Training of the Day"), KeyboardButton("🧹 End Session")],
+            [KeyboardButton("🔄 Sync Data")], [KeyboardButton("🔧 Status")],
             [KeyboardButton("❓ Help")]
         ], resize_keyboard=True)
         
@@ -74,11 +74,9 @@ class BenjaminTelegramBot:
         app.add_handler(CommandHandler("status", self.status_command))
         app.add_handler(CommandHandler("data", self.data_command))
         app.add_handler(CommandHandler("activities", self.activities_command))
-        # Goals/events commands temporarily disabled
         app.add_handler(CommandHandler("sync", self.sync_command))
         app.add_handler(CommandHandler("discussion", self.discussion_command))
         app.add_handler(CommandHandler("end", self.end_command))
-        app.add_handler(CommandHandler("end_session", self.end_command))
         app.add_handler(CommandHandler("debug", self.debug_command))
         
         # Callback buttons
@@ -134,14 +132,12 @@ Hello {user.first_name}! I'm your personal AI coaching assistant, here to help y
 🤖 *What I can do for you:*
 • 📊 Daily health & activity summaries
 • 🏃 Personalized workout recommendations  
-• 🎯 Goal tracking and progress analysis
 • 📈 Trend analysis and insights
 
 🚀 *Getting Started:*
 Use the menu below or try these commands:
 • `/data` - See today's health metrics
 • `/activities` - View recent workouts
-• `/goals` - Check your progress
 • `/help` - Full command list
 
 Ready to optimize your training? Let's go! 💪"""
@@ -306,22 +302,14 @@ All systems are operational! 🚀"""
         try:
             await update.message.reply_text(
                 f"✅ Discussion complete!\n\n{preview}",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Request Different", callback_data="request_different")],
-                    [InlineKeyboardButton("💬 Chat with Coach", callback_data="chat_coach")],
-                ])
-            )
+                parse_mode=ParseMode.MARKDOWN
+                )
         except Exception as e:
             self.logger.error(f"Telegram Markdown formatting error (fallback to plain): {e}")
             plain = preview.replace("```", "").replace("*", "").replace("_", "").replace("`", "")
             await update.message.reply_text(
                 f"✅ Discussion complete! (plain text)\n\n{plain}",
-                parse_mode=None,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Request Different", callback_data="request_different")],
-                    [InlineKeyboardButton("💬 Chat with Coach", callback_data="chat_coach")],
-                ])
+                parse_mode=None
             )
     
     async def sync_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -353,15 +341,7 @@ All systems are operational! 🚀"""
             message = "⚠️ Error triggering sync. Please check the system status."
         
         await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
-    
-    # Goals/events temporarily disabled
-
-    # Removed goal_status_command; consolidated under goals_command
-
-    # Add event disabled
-
-    # Delete event disabled
-    
+      
     async def message_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle text messages"""
         message_text = update.message.text
@@ -374,10 +354,14 @@ All systems are operational! 🚀"""
             await self.data_command(update, context)
         elif message_text == "🏃 Recent Activities":
             await self.activities_command(update, context)
-        # Goals & Events removed from quick replies
-        elif message_text == "🤖 Discussion":
+        elif message_text == "🤖 Training of the Day":
             await self.discussion_command(update, context)
-        # Removed Settings screen from main menu to streamline UI
+        elif message_text == "🧹 End Session":
+            await self.end_command(update, context)
+        elif message_text == "🔄 Sync Data":
+            await self.sync_command(update, context)
+        elif message_text == "🔧 Status":
+            await self.status_command(update, context)
         elif message_text == "❓ Help":
             await self.help_command(update, context)
         else:
@@ -765,6 +749,14 @@ All systems are operational! 🚀"""
                         answer = (answer or "") + "\n\n_\[debug: " + ", ".join(extras) + "\]_"
                 if not answer:
                     raise ValueError("Empty reply from Agentic API")
+                
+                # Send the successful AI response
+                try:
+                    await update.message.reply_text(answer, parse_mode=ParseMode.MARKDOWN)
+                except Exception:
+                    # Fallback to plain text if markdown fails
+                    await update.message.reply_text(answer)
+                return  # Exit early on success
             else:
                 raise RuntimeError(f"Agentic API status {resp.status_code}")
         except Exception as e:
@@ -773,22 +765,15 @@ All systems are operational! 🚀"""
             answer = (
                 "I couldn't reach the AI team just now. Try /data for today's metrics or /activities for workouts."
             )
-        # Send main answer with inline actions
-        try:
-            await update.message.reply_text(answer, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Log Workout", callback_data="log_workout"),
-                    InlineKeyboardButton("🔄 Request Different", callback_data="request_different"),
-                ],
-                [InlineKeyboardButton("💬 Chat with Coach", callback_data="chat_coach")],
-            ]))
-        except Exception:
-            await update.message.reply_text(answer, parse_mode=ParseMode.MARKDOWN)
-        # Reinforce persistent keyboard hint
-        try:
-            await update.message.reply_text("Use the menu or /help for options.", reply_markup=self.main_menu_keyboard)
-        except Exception:
-            pass
+            # Send fallback message and menu hint only on error
+            try:
+                await update.message.reply_text(answer, parse_mode=ParseMode.MARKDOWN)
+            except Exception:
+                await update.message.reply_text(answer)
+            try:
+                await update.message.reply_text("Use the menu or /help for options.", reply_markup=self.main_menu_keyboard)
+            except Exception:
+                pass
 
     # Session watchdog removed
     

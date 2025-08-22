@@ -305,6 +305,7 @@ class ShortTermMemory:
     - Keeps a full session transcript (until session end)
     - Also maintains a rolling window for compact context
     - Tracks last agent outputs and last classification
+    - Tracks session activity for inactivity watchdog
     """
 
     def __init__(self, max_turns: int = 20) -> None:
@@ -313,6 +314,7 @@ class ShortTermMemory:
         self._transcripts: dict[str, list[Tuple[str, str]]] = {}
         self._last_agent_outputs: dict[str, dict] = {}
         self._last_classification: dict[str, dict] = {}
+        self._last_activity: dict[str, float] = {}  # Track last activity timestamp per session
 
     def add_user_message(self, chat_id: str, text: str) -> None:
         if not chat_id or not text:
@@ -320,6 +322,7 @@ class ShortTermMemory:
         q = self._messages_rolling.setdefault(chat_id, deque(maxlen=self.max_turns))
         q.append(("user", text))
         self._transcripts.setdefault(chat_id, []).append(("user", text))
+        self._update_activity(chat_id)
 
     def add_agent_reply(self, chat_id: str, reply_text: str, agent_outputs: dict | None = None) -> None:
         if not chat_id or not reply_text:
@@ -329,6 +332,7 @@ class ShortTermMemory:
         self._transcripts.setdefault(chat_id, []).append(("assistant", reply_text))
         if agent_outputs is not None:
             self._last_agent_outputs[chat_id] = agent_outputs
+        self._update_activity(chat_id)
 
     def get_context(self, chat_id: str, turns: int = 8) -> list[dict[str, str]]:
         if not chat_id or chat_id not in self._messages_rolling:
@@ -348,7 +352,7 @@ class ShortTermMemory:
         return self._last_classification.get(chat_id, {})
 
     def clear(self, chat_id: str) -> None:
-        for store in (self._messages_rolling, self._transcripts, self._last_agent_outputs, self._last_classification):
+        for store in (self._messages_rolling, self._transcripts, self._last_agent_outputs, self._last_classification, self._last_activity):
             if chat_id in store:
                 del store[chat_id]
 
@@ -361,6 +365,30 @@ class ShortTermMemory:
 
     def get_full_transcript(self, chat_id: str) -> str:
         return self.get_plain_conversation(chat_id)
+    
+    def _update_activity(self, chat_id: str) -> None:
+        """Update last activity timestamp for a session"""
+        import time
+        if chat_id:
+            self._last_activity[chat_id] = time.time()
+    
+    def get_inactive_sessions(self, timeout_seconds: int = 3600) -> list[str]:
+        """Get list of session IDs that have been inactive for longer than timeout_seconds (default 1 hour)"""
+        import time
+        current_time = time.time()
+        inactive_sessions = []
+        
+        for chat_id, last_activity in self._last_activity.items():
+            if current_time - last_activity > timeout_seconds:
+                # Only consider sessions with actual content as inactive
+                if chat_id in self._transcripts and self._transcripts[chat_id]:
+                    inactive_sessions.append(chat_id)
+        
+        return inactive_sessions
+    
+    def get_all_active_sessions(self) -> list[str]:
+        """Get all session IDs that have content"""
+        return [chat_id for chat_id in self._transcripts.keys() if self._transcripts[chat_id]]
 
 
 short_memory = ShortTermMemory()

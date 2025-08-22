@@ -490,9 +490,8 @@ async def get_agent_context(db: Session = Depends(get_db)):
                 "rhr": r.rhr,
                 "sleep_hours": r.sleep_hours,
                 "sleep_score": r.sleep_score,
-                "acute_load_7d": r.acute_load_7d,
-                "chronic_load_28d": r.chronic_load_28d,
-                "training_status": r.training_status,
+                # acute_load_7d and chronic_load_28d removed to avoid duplication with training_load data
+                # training_status removed as it's conceptually part of training load, not readiness
             }
             for r in r_rows
         ]
@@ -861,11 +860,12 @@ class ReadinessResponse(BaseModel):
     rhr_7d_avg: Optional[float] = None
     sleep_hours: Optional[float] = None
     sleep_score: Optional[float] = None
-    acute_load_7d: Optional[float] = None
-    chronic_load_28d: Optional[float] = None
+    # Removed duplicate fields that belong in TrainingLoadDaily:
+    # - acute_load_7d
+    # - chronic_load_28d  
+    # - training_status
     weight_kg: Optional[float] = None
     weight_trend_28d: Optional[float] = None
-    training_status: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
 
@@ -929,178 +929,6 @@ async def get_latest_weight(db: Session = Depends(get_db)):
         raise
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to get latest weight: {str(e)}")
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "api_server:app",
-        host="127.0.0.1",
-        port=8010,
-        reload=settings.debug,
-        log_level=settings.log_level.lower()
-    )
-
-
-# Error handlers
-@app.exception_handler(404)
-async def not_found_handler(request, exc):
-    return JSONResponse(
-        status_code=404,
-        content={"detail": "Endpoint not found"}
-    )
-
-
-@app.exception_handler(500)
-async def internal_error_handler(request, exc):
-    logger.error(f"Internal server error: {exc}")
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error"}
-    )
-
-
-# Agentic-ready endpoints
-
-class ReadinessResponse(BaseModel):
-    date: date
-    readiness_flag: str
-    readiness_notes: Optional[str] = None
-    hrv_status: Optional[str] = None
-    hrv_overnight_avg: Optional[float] = None
-    hrv_7d_avg: Optional[float] = None
-    rhr: Optional[float] = None
-    rhr_7d_avg: Optional[float] = None
-    sleep_hours: Optional[float] = None
-    sleep_score: Optional[float] = None
-    acute_load_7d: Optional[float] = None
-    chronic_load_28d: Optional[float] = None
-    weight_kg: Optional[float] = None
-    weight_trend_28d: Optional[float] = None
-    training_status: Optional[str] = None
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
-
-
-@app.get("/readiness/recent", response_model=List[ReadinessResponse])
-async def get_recent_readiness(days: int = Query(7), db: Session = Depends(get_db)):
-    cutoff = date.today() - timedelta(days=days)
-    rows = db.query(ReadinessDaily).filter(ReadinessDaily.date >= cutoff).order_by(ReadinessDaily.date.desc()).all()
-    return [ReadinessResponse.from_orm(r) for r in rows]
-
-
-@app.get("/training-load/recent")
-async def get_training_load(days: int = Query(28), db: Session = Depends(get_db)):
-    cutoff = date.today() - timedelta(days=days)
-    rows = db.query(TrainingLoadDaily).filter(TrainingLoadDaily.date >= cutoff).order_by(TrainingLoadDaily.date).all()
-    return [{
-        "date": r.date.isoformat(),
-        "daily_load": r.daily_load,
-        "acute_load_7d": r.acute_load_7d,
-        "chronic_load_28d": r.chronic_load_28d,
-        "training_status": r.training_status
-    } for r in rows]
-
-
-@app.get("/weight/recent")
-async def get_weight(days: int = Query(60), db: Session = Depends(get_db)):
-    cutoff = date.today() - timedelta(days=days)
-    rows = db.query(BodyWeightLog).filter(BodyWeightLog.date >= cutoff).order_by(BodyWeightLog.date).all()
-    return [{
-        "date": r.date.isoformat(),
-        "weight_kg": r.weight_kg,
-        "trend_28d": r.trend_28d,
-        "source": r.source
-    } for r in rows]
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "api_server:app",
-        host="127.0.0.1",
-        port=8010,
-        reload=settings.debug,
-        log_level=settings.log_level.lower()
-    )
-
-
-# Error handlers
-@app.exception_handler(404)
-async def not_found_handler(request, exc):
-    return JSONResponse(
-        status_code=404,
-        content={"detail": "Endpoint not found"}
-    )
-
-
-@app.exception_handler(500)
-async def internal_error_handler(request, exc):
-    logger.error(f"Internal server error: {exc}")
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error"}
-    )
-
-
-# Agentic-ready endpoints
-
-class ReadinessResponse(BaseModel):
-    date: date
-    readiness_flag: str
-    readiness_notes: Optional[str] = None
-    hrv_status: Optional[str] = None
-    hrv_overnight_avg: Optional[float] = None
-    hrv_7d_avg: Optional[float] = None
-    rhr: Optional[float] = None
-    rhr_7d_avg: Optional[float] = None
-    sleep_hours: Optional[float] = None
-    sleep_score: Optional[float] = None
-    acute_load_7d: Optional[float] = None
-    chronic_load_28d: Optional[float] = None
-    weight_kg: Optional[float] = None
-    weight_trend_28d: Optional[float] = None
-    training_status: Optional[str] = None
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
-
-
-@app.get("/readiness/recent", response_model=List[ReadinessResponse])
-async def get_recent_readiness(days: int = Query(7), db: Session = Depends(get_db)):
-    cutoff = date.today() - timedelta(days=days)
-    rows = db.query(ReadinessDaily).filter(ReadinessDaily.date >= cutoff).order_by(ReadinessDaily.date.desc()).all()
-    return [ReadinessResponse.from_orm(r) for r in rows]
-
-
-@app.get("/training-load/recent")
-async def get_training_load(days: int = Query(28), db: Session = Depends(get_db)):
-    cutoff = date.today() - timedelta(days=days)
-    rows = db.query(TrainingLoadDaily).filter(TrainingLoadDaily.date >= cutoff).order_by(TrainingLoadDaily.date).all()
-    return [{
-        "date": r.date.isoformat(),
-        "daily_load": r.daily_load,
-        "acute_load_7d": r.acute_load_7d,
-        "chronic_load_28d": r.chronic_load_28d,
-        "training_status": r.training_status
-    } for r in rows]
-
-
-@app.get("/weight/recent")
-async def get_weight(days: int = Query(60), db: Session = Depends(get_db)):
-    cutoff = date.today() - timedelta(days=days)
-    rows = db.query(BodyWeightLog).filter(BodyWeightLog.date >= cutoff).order_by(BodyWeightLog.date).all()
-    return [{
-        "date": r.date.isoformat(),
-        "weight_kg": r.weight_kg,
-        "trend_28d": r.trend_28d,
-        "source": r.source
-    } for r in rows]
 
 
 if __name__ == "__main__":

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Benjamin AI Chat</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .test-result { margin: 10px 0; padding: 10px; border-radius: 5px; }
+        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .info { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+        button { padding: 10px 20px; margin: 5px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        #testResults { margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <h1>🧪 Benjamin AI Frontend Test</h1>
+    <p>This page will test if your chat frontend is working correctly.</p>
+    
+    <button onclick="testChatPage()">Test Chat Page</button>
+    <button onclick="testAPIs()">Test APIs</button>
+    <button onclick="clearTests()">Clear Results</button>
+    
+    <div id="testResults"></div>
+    
+    <script>
+        let results = document.getElementById('testResults');
+        
+        function addResult(message, type = 'info') {
+            const div = document.createElement('div');
+            div.className = `test-result ${type}`;
+            div.innerHTML = message;
+            results.appendChild(div);
+        }
+        
+        function clearTests() {
+            results.innerHTML = '';
+        }
+        
+        async function testChatPage() {
+            addResult('🧪 Testing Chat Page...', 'info');
+            
+            try {
+                const response = await fetch('http://localhost:3000/chat');
+                if (response.ok) {
+                    addResult('✅ Chat page is accessible at http://localhost:3000/chat', 'success');
+                } else {
+                    addResult(`❌ Chat page returned status: ${response.status}`, 'error');
+                }
+            } catch (error) {
+                addResult(`❌ Failed to reach chat page: ${error.message}`, 'error');
+            }
+        }
+        
+        async function testAPIs() {
+            addResult('🧪 Testing Backend APIs...', 'info');
+            
+            // Test Data API
+            try {
+                const response = await fetch('http://localhost:8010/health');
+                if (response.ok) {
+                    const data = await response.json();
+                    addResult(`✅ Data API: ${data.status} (${data.timestamp})`, 'success');
+                } else {
+                    addResult(`❌ Data API failed: ${response.status}`, 'error');
+                }
+            } catch (error) {
+                addResult(`❌ Data API error: ${error.message}`, 'error');
+            }
+            
+            // Test Agentic API
+            try {
+                const response = await fetch('http://localhost:8012/health');
+                if (response.ok) {
+                    const data = await response.json();
+                    addResult(`✅ Agentic API: ${data.status} v${data.version}`, 'success');
+                } else {
+                    addResult(`❌ Agentic API failed: ${response.status}`, 'error');
+                }
+            } catch (error) {
+                addResult(`❌ Agentic API error: ${error.message}`, 'error');
+            }
+            
+            // Test Message Route
+            try {
+                const response = await fetch('http://localhost:8012/route', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        text: "Test message from test page",
+                        session_id: "test-page-" + Date.now()
+                    })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    addResult('✅ Message routing works - AI responded successfully', 'success');
+                    addResult(`📝 AI response preview: "${data.reply?.substring(0, 80)}..."`, 'info');
+                } else {
+                    addResult(`❌ Message route failed: ${response.status}`, 'error');
+                }
+            } catch (error) {
+                addResult(`❌ Message route error: ${error.message}`, 'error');
+            }
+        }
+        
+        // Auto-run tests on page load
+        window.onload = () => {
+            addResult('🚀 Benjamin AI Frontend Test Page Loaded', 'info');
+            addResult('💡 Click the buttons above to test different components', 'info');
+        };
+    </script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+

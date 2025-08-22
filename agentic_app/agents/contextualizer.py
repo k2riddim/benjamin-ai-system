@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from typing import Dict, Any, List
+import logging
 
 from openai import OpenAI
 from agentic_app.config.settings import settings
+from agentic_app.agents.llm_utils import complete_text_with_guards
 from agentic_app.agents.tools import memory_store
 from langsmith.run_helpers import traceable
 
@@ -48,7 +50,9 @@ class QueryContextualizer:
 
         # LLM-powered contextual rewrite
         try:
-            condensed = "\n".join([f"{m.get('role')}: {m.get('text')}" for m in (short_history or [])][-12:])
+            # Limit to the last 6 user/assistant turns to keep prompt lean
+            recent = (short_history or [])[-6:]
+            condensed = "\n".join([f"{m.get('role')}: {m.get('text')[:400]}" for m in recent])
             system = (
                 "You are a Query Contextualizer for an AI coaching system. "
                 "Rewrite the latest user message into a clear, self-contained prompt by resolving pronouns and references "
@@ -56,24 +60,39 @@ class QueryContextualizer:
                 "Return STRICT JSON with keys: rewritten (string), notes (string, brief)."
             )
             user = (
-                f"Conversation history (most recent last):\n{condensed or 'none'}\n\n"
-                f"Latest user message: {user_text}\n"
+                f"Conversation history (most recent last, trimmed):\n{condensed or 'none'}\n\n"
+                f"Latest user message: {user_text[:600]}\n"
                 "Task: Produce a single rewritten prompt capturing what the user is asking now."
             )
-            resp = self.client.chat.completions.create(
-                model=settings.openai_model,
+            text, diag = complete_text_with_guards(
+                self.client,
+                model=(settings.openai_context_model or settings.openai_model),
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                max_completion_tokens=3500,
                 temperature=0,
-                max_tokens=220,
             )
+            try:
+                logging.getLogger("agentic_app").debug(f"gpt5.diag.contextualizer.rewrite: {diag}")
+            except Exception:
+                pass
+            try:
+                # Surface diagnostics inside the notes field if parsing fails later
+                self._last_diag = diag  # type: ignore[attr-defined]
+            except Exception:
+                pass
             import json as _json
-            parsed = _json.loads(resp.choices[0].message.content)
+            parsed = _json.loads(text)
             rewritten = (parsed.get("rewritten") or user_text).strip()
             notes = (parsed.get("notes") or "").strip()
             return {"text": rewritten, "notes": notes}
         except Exception:
             # Robust fallback to original text
-            return {"text": user_text, "notes": "llm_failure_fallback"}
+            # Include last diagnostics if available to aid debugging in the UI/logs
+            try:
+                diag_note = f" llm_diag={getattr(self, '_last_diag', {})}"  # type: ignore[attr-defined]
+            except Exception:
+                diag_note = ""
+            return {"text": user_text, "notes": ("llm_failure_fallback" + diag_note).strip()}
 
     @traceable(name="contextualizer.build_packet", run_type="chain")
     def build(self, user_text: str, short_history: List[Dict[str, str]] | None = None, memories_top_k: int = 5) -> Dict[str, Any]:
@@ -120,14 +139,19 @@ class QueryContextualizer:
                 "Return STRICT JSON with key: metrics (array of short strings)."
             )
             user = f"Text: {contextualized}"
-            resp = self.client.chat.completions.create(
-                model=settings.openai_model,
+            text, diag2 = complete_text_with_guards(
+                self.client,
+                model=(settings.openai_context_model or settings.openai_model),
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                max_completion_tokens=3200,
                 temperature=0,
-                max_tokens=120,
             )
+            try:
+                logging.getLogger("agentic_app").debug(f"gpt5.diag.contextualizer.extract: {diag2}")
+            except Exception:
+                pass
             import json as _json
-            parsed = _json.loads(resp.choices[0].message.content)
+            parsed = _json.loads(text)
             arr = parsed.get("metrics") or []
             return [str(x)[:64] for x in arr if isinstance(x, str) and x.strip()][:12]
         except Exception:

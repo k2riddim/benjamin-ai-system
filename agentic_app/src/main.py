@@ -4,13 +4,16 @@ import logging
 import logging.handlers
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 import json as _json
 import re
 from datetime import datetime
+import threading
+from collections import defaultdict
 
 import typer
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 import time as _time
 from fastapi.responses import JSONResponse
@@ -52,6 +55,159 @@ logger = setup_logging()
 router = ProjectManagerRouter()
 contextualizer = QueryContextualizer()
 session_agent = SessionAgent()
+
+# Global status tracking for thinking status
+class StatusTracker:
+    """Track thinking status for each session"""
+    def __init__(self):
+        self._statuses: Dict[str, Dict[str, Any]] = defaultdict(dict)
+        self._lock = threading.Lock()
+    
+    def set_status(self, session_id: str, status: str, details: str = "", agents: List[str] = None):
+        """Set the current status for a session"""
+        with self._lock:
+            self._statuses[session_id] = {
+                "status": status,
+                "details": details,
+                "agents": agents or [],
+                "timestamp": datetime.now().isoformat(),
+            }
+    
+    def get_status(self, session_id: str) -> Dict[str, Any]:
+        """Get the current status for a session"""
+        with self._lock:
+            return self._statuses.get(session_id, {
+                "status": "idle",
+                "details": "",
+                "agents": [],
+                "timestamp": datetime.now().isoformat(),
+            })
+    
+    def clear_status(self, session_id: str):
+        """Clear status for a session"""
+        with self._lock:
+            self._statuses.pop(session_id, None)
+
+status_tracker = StatusTracker()
+
+# Session inactivity watchdog
+class SessionWatchdog:
+    """Monitor sessions for inactivity and automatically end them after 1 hour"""
+    
+    def __init__(self, check_interval_minutes: int = 10):
+        self.check_interval_minutes = check_interval_minutes
+        self.is_running = False
+        self._task: asyncio.Task | None = None
+    
+    async def start(self):
+        """Start the inactivity watchdog background task"""
+        if self.is_running:
+            return
+        self.is_running = True
+        self._task = asyncio.create_task(self._watchdog_loop())
+        logger.info(f"Session inactivity watchdog started (check every {self.check_interval_minutes} minutes)")
+    
+    async def stop(self):
+        """Stop the inactivity watchdog"""
+        self.is_running = False
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+        logger.info("Session inactivity watchdog stopped")
+    
+    async def _watchdog_loop(self):
+        """Main watchdog loop that periodically checks for inactive sessions"""
+        while self.is_running:
+            try:
+                await self._check_and_end_inactive_sessions()
+                # Wait for next check interval
+                await asyncio.sleep(self.check_interval_minutes * 60)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"Session watchdog error: {e}")
+                # Continue running even if there's an error
+                await asyncio.sleep(60)  # Wait 1 minute before retrying
+    
+    async def _check_and_end_inactive_sessions(self):
+        """Check for inactive sessions and end them"""
+        try:
+            inactive_sessions = short_memory.get_inactive_sessions(timeout_seconds=3600)  # 1 hour
+            
+            if not inactive_sessions:
+                return
+            
+            logger.info(f"Found {len(inactive_sessions)} inactive sessions to end: {inactive_sessions}")
+            
+            for session_id in inactive_sessions:
+                try:
+                    await self._end_session_internally(session_id, "inactivity_timeout")
+                    logger.info(f"Ended inactive session: {session_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to end inactive session {session_id}: {e}")
+        
+        except Exception as e:
+            logger.warning(f"Error checking inactive sessions: {e}")
+    
+    async def _end_session_internally(self, session_id: str, reason: str = "inactivity_timeout"):
+        """Internal method to end a session (reuses logic from /end-session endpoint)"""
+        try:
+            transcript = short_memory.get_full_transcript(session_id)
+        except Exception:
+            transcript = ""
+        
+        preferences_count = insights_count = patterns_count = 0
+        
+        if transcript:
+            try:
+                # Strict provenance: keep only USER utterances
+                user_only_lines = []
+                for line in (transcript or "").split("\n"):
+                    if line.lower().startswith("user:"):
+                        user_only_lines.append(line.split(":", 1)[1].strip())
+                user_only_transcript = "\n".join(user_only_lines).strip()
+                
+                if user_only_transcript:  # Only extract if there's actual user content
+                    extraction = session_agent.extract(user_only_transcript)
+                    
+                    for pref in extraction.preferences:
+                        try:
+                            memory_store.add_memory(pref, metadata={"type": "preference", "source": "session_agent", "ended_by": reason})
+                            preferences_count += 1
+                        except Exception:
+                            pass
+                    
+                    for ins in extraction.insights:
+                        try:
+                            memory_store.add_memory(ins, metadata={"type": "insight", "source": "session_agent", "ended_by": reason})
+                            insights_count += 1
+                        except Exception:
+                            pass
+                    
+                    for hp in extraction.health_patterns:
+                        try:
+                            memory_store.add_memory(hp, metadata={"type": "health_pattern", "source": "session_agent", "ended_by": reason})
+                            patterns_count += 1
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.warning(f"Session extraction failed for {session_id}: {e}")
+        
+        # Clear short-term memory and status for session
+        try:
+            short_memory.clear(session_id)
+            status_tracker.clear_status(session_id)
+        except Exception:
+            pass
+        
+        logger.info(f"Session {session_id} ended by {reason}: {preferences_count} preferences, {insights_count} insights, {patterns_count} patterns extracted")
+
+# Initialize watchdog
+session_watchdog = SessionWatchdog(check_interval_minutes=10)
 
 def _get_session_log_path() -> str:
     """Return a rotating log file path for agent discussions."""
@@ -101,6 +257,20 @@ class DailyDiscussionResponse(BaseModel):
 
 app = FastAPI(title=settings.app_name, version=settings.version)
 
+# Add CORS middleware to allow requests from frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",  # React dev server
+        "http://127.0.0.1:3000",
+        "http://localhost:8080",  # Test page server
+        "http://127.0.0.1:8080",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.on_event("startup")
 async def on_startup():
@@ -109,7 +279,21 @@ async def on_startup():
         logger.info("Ensured database tables exist for Agentic App")
     except Exception as e:
         logger.error(f"Failed to ensure DB tables: {e}")
-    # Inactivity watchdog removed with session memory deprecation
+    
+    # Start session inactivity watchdog
+    try:
+        await session_watchdog.start()
+    except Exception as e:
+        logger.error(f"Failed to start session watchdog: {e}")
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    """Cleanup on app shutdown"""
+    try:
+        await session_watchdog.stop()
+    except Exception as e:
+        logger.error(f"Failed to stop session watchdog: {e}")
 
 
 @app.get("/health")
@@ -146,14 +330,37 @@ if settings.request_logging_enabled:
 
 @app.post("/daily-discussion", response_model=DailyDiscussionResponse)
 async def daily_discussion(request: Request) -> Any:
-    latest = {}
+    # Generate a session ID for daily discussion tracking
+    import uuid
+    session_id = f"daily-{uuid.uuid4()}"
+    
+    # Set thinking status
+    status_tracker.set_status(session_id, "thinking", "Preparing daily workout recommendation...", [])
+    
     try:
-        latest = data_api.get_latest_health()
-    except Exception as e:
-        logger.warning(f"Could not fetch latest health: {e}")
+        latest = {}
+        try:
+            latest = data_api.get_latest_health()
+        except Exception as e:
+            logger.warning(f"Could not fetch latest health: {e}")
 
-    with tracing_v2_enabled(project_name=settings.langsmith_project):
-        result = router.route("Generate best workout for today", forced_intent="workout_of_the_day")
+        status_tracker.set_status(session_id, "thinking", "Generating workout plan...", [])
+        
+        with tracing_v2_enabled(project_name=settings.langsmith_project):
+            result = router.route(
+                "Generate best workout for today", 
+                forced_intent="workout_of_the_day",
+                session_id=session_id,
+                status_tracker=status_tracker
+            )
+        
+        # Set completion status
+        status_tracker.set_status(session_id, "complete", "Daily workout ready", [])
+        
+    except Exception as e:
+        # Set error status
+        status_tracker.set_status(session_id, "error", f"Error generating daily workout: {str(e)}", [])
+        raise
 
     # Use PM's formatted message if present in logs or reply
     msg = result.get("formatted_message") or result.get("reply_text", "")
@@ -190,9 +397,61 @@ async def daily_discussion(request: Request) -> Any:
     try:
         if response.logs.get("discussion_id"):
             jr.headers["X-Discussion-Id"] = response.logs["discussion_id"]
+        # Add session ID to headers for status tracking
+        jr.headers["X-Session-Id"] = session_id
     except Exception:
         pass
     return jr
+
+
+@app.get("/status/{session_id}")
+async def get_session_status(session_id: str):
+    """Get the current thinking status for a session"""
+    status = status_tracker.get_status(session_id)
+    
+    # Update activity when status is checked (user is actively monitoring)
+    try:
+        if session_id and session_id in short_memory._transcripts:
+            short_memory._update_activity(session_id)
+    except Exception:
+        pass
+    
+    return JSONResponse(status_code=200, content=status)
+
+
+@app.get("/watchdog/status")
+async def get_watchdog_status():
+    """Get the current session watchdog status and active sessions"""
+    try:
+        active_sessions = short_memory.get_all_active_sessions()
+        inactive_sessions = short_memory.get_inactive_sessions(timeout_seconds=3600)
+        
+        return {
+            "watchdog_running": session_watchdog.is_running,
+            "check_interval_minutes": session_watchdog.check_interval_minutes,
+            "total_active_sessions": len(active_sessions),
+            "sessions_to_timeout": len(inactive_sessions),
+            "active_sessions": active_sessions[:10],  # Limit to first 10 for brevity
+            "sessions_near_timeout": inactive_sessions[:5],  # Limit to first 5
+        }
+    except Exception as e:
+        logger.warning(f"Error getting watchdog status: {e}")
+        return {
+            "watchdog_running": session_watchdog.is_running,
+            "check_interval_minutes": session_watchdog.check_interval_minutes,
+            "error": str(e)
+        }
+
+
+@app.post("/watchdog/test-cleanup")
+async def test_watchdog_cleanup():
+    """Manually trigger a watchdog cleanup check (for testing)"""
+    try:
+        await session_watchdog._check_and_end_inactive_sessions()
+        return {"status": "ok", "message": "Watchdog cleanup check completed"}
+    except Exception as e:
+        logger.warning(f"Manual watchdog test failed: {e}")
+        return {"status": "error", "error": str(e)}
 
 
 class RouteRequest(BaseModel):
@@ -228,17 +487,28 @@ async def route_message(payload: RouteRequest):
     except Exception:
         history = []
 
-    with tracing_v2_enabled(project_name=settings.langsmith_project):
-        # Step 1: build unified context packet
-        packet = contextualizer.build(payload.text, short_history=history, memories_top_k=5)
-        rewritten_text = packet.get("contextualized_query") or payload.text
-        # Step 2: route using rewritten text
-        result = router.route(
-            rewritten_text,
-            forced_intent=payload.intent,
-            forced_metric=payload.metric,
-            session_id=payload.session_id,
-        )
+    session_id = payload.session_id or "default"
+    
+    # Set thinking status before processing
+    status_tracker.set_status(session_id, "thinking", "Processing your request...", [])
+    
+    try:
+        with tracing_v2_enabled(project_name=settings.langsmith_project):
+            # Step 1: build unified context packet
+            status_tracker.set_status(session_id, "thinking", "Building context...", [])
+            packet = contextualizer.build(payload.text, short_history=history, memories_top_k=5)
+            rewritten_text = packet.get("contextualized_query") or payload.text
+            
+            # Step 2: route using rewritten text
+            status_tracker.set_status(session_id, "thinking", "Routing to AI specialists...", [])
+            result = router.route(
+                rewritten_text,
+                forced_intent=payload.intent,
+                forced_metric=payload.metric,
+                session_id=payload.session_id,
+                status_tracker=status_tracker,
+            )
+            
         # Keep both raw and contextualized texts in logs
         try:
             lg = result.setdefault("logs", {})
@@ -247,6 +517,14 @@ async def route_message(payload: RouteRequest):
             lg["context_packet"] = packet
         except Exception:
             pass
+        
+        # Set completion status
+        status_tracker.set_status(session_id, "complete", "Response ready", [])
+        
+    except Exception as e:
+        # Set error status
+        status_tracker.set_status(session_id, "error", f"Error processing request: {str(e)}", [])
+        raise
     # Append context and LLM answer into log
     try:
         _append_discussion_log(payload.text, result)
@@ -267,8 +545,15 @@ async def route_message(payload: RouteRequest):
             pass
 
     # Build response payload (always)
+    final_reply = result.get("formatted_message") or result.get("reply_text", "")
+    
+    # DEBUGGING: Log what we're sending to Telegram
+    logger.info(f"TELEGRAM_DEBUG: reply_length={len(final_reply)}, formatted_message={bool(result.get('formatted_message'))}, reply_text={bool(result.get('reply_text'))}, agents={result.get('agents', [])}")
+    if not final_reply:
+        logger.error(f"TELEGRAM_DEBUG: Empty reply! Result keys: {list(result.keys())}, logs keys: {list((result.get('logs', {}) or {}).keys())}")
+    
     payload_content = {
-        "reply": result.get("formatted_message") or result["reply_text"],
+        "reply": final_reply,
         "agents": result.get("agents", []),
         "duration_seconds": result.get("duration_seconds", 0.0),
         "logs": result.get("logs", {}),
@@ -366,6 +651,8 @@ class EndSessionPayload(BaseModel):
 async def end_session(payload: EndSessionPayload):
     """Summarize and persist durable insights from short-term session, then clear it."""
     sid = payload.session_id or "default"
+    reason = payload.reason or "manual"
+    
     try:
         transcript = short_memory.get_full_transcript(sid)
     except Exception:
@@ -386,38 +673,44 @@ async def end_session(payload: EndSessionPayload):
             extraction = session_agent.extract(user_only_transcript)
             for pref in extraction.preferences:
                 try:
-                    memory_store.add_memory(pref, metadata={"type": "preference", "source": "session_agent"})
+                    memory_store.add_memory(pref, metadata={"type": "preference", "source": "session_agent", "ended_by": reason})
                     preferences_count += 1
                 except Exception:
                     pass
             for ins in extraction.insights:
                 try:
-                    memory_store.add_memory(ins, metadata={"type": "insight", "source": "session_agent"})
+                    memory_store.add_memory(ins, metadata={"type": "insight", "source": "session_agent", "ended_by": reason})
                     insights_count += 1
                 except Exception:
                     pass
             for hp in extraction.health_patterns:
                 try:
-                    memory_store.add_memory(hp, metadata={"type": "health_pattern", "source": "session_agent"})
+                    memory_store.add_memory(hp, metadata={"type": "health_pattern", "source": "session_agent", "ended_by": reason})
                     patterns_count += 1
                 except Exception:
                     pass
         except Exception as e:
             logger.warning(f"Session extraction failed: {e}")
-    # Clear short-term memory for session
+    # Clear short-term memory and status for session
     try:
         short_memory.clear(sid)
+        status_tracker.clear_status(sid)
     except Exception:
         pass
+    
+    logger.info(f"Session {sid} ended by {reason}: {preferences_count} preferences, {insights_count} insights, {patterns_count} patterns")
+    
     return {
         "status": "ok",
+        "session_id": sid,
+        "ended_by": reason,
         "preferences_logged": preferences_count,
         "insights_logged": insights_count,
         "health_patterns_logged": patterns_count,
     }
 
 
-# Inactivity watchdog removed
+# Session inactivity watchdog is now active and integrated above
 
 
 cli = typer.Typer(name="agentic-app")
